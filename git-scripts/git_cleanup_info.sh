@@ -31,12 +31,12 @@ git fetch --tags --quiet 2>/dev/null
 # Get all local tags
 local_tags=$(git tag)
 if [ -n "$local_tags" ]; then
-  # Get all remote tags (stripping refs/tags/ prefix)
-  remote_tags=$(git ls-remote --tags origin | awk '{print $2}' | sed 's/refs\/tags\///' | sed 's/\^{}$//')
+  # Get all remote tags
+  remote_tags=$(git tag -l -r origin)
   # Process each local tag
   echo "$local_tags" | while IFS= read -r tag; do
     # Check if tag exists in remote_tags
-    if ! echo "$remote_tags" | grep -Fx "$tag" > /dev/null; then
+    if ! echo "$remote_tags" | grep -Fx "$tag" >/dev/null; then
       # Tag is local-only
       echo "Tag: $tag"
       # Get tag date (commit's author date)
