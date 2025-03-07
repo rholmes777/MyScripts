@@ -31,7 +31,7 @@ git fetch --tags --quiet 2>/dev/null
 # Get all local tags
 local_tags=$(git tag)
 if [ -n "$local_tags" ]; then
-  # Get all remote tags (stripping refs/remotes/origin/ prefix)
+  # Get all remote tags (stripping refs/tags/ prefix)
   remote_tags=$(git ls-remote --tags origin | awk '{print $2}' | sed 's/refs\/tags\///' | sed 's/\^{}$//')
   # Process each local tag
   echo "$local_tags" | while IFS= read -r tag; do
@@ -39,9 +39,9 @@ if [ -n "$local_tags" ]; then
     if ! echo "$remote_tags" | grep -Fx "$tag" > /dev/null; then
       # Tag is local-only
       echo "Tag: $tag"
-      # Get tag date and commit
-      date=$(git for-each-ref --format='%(if)%(taggerdate)%(then)%(taggerdate:iso8601)%(else)%(*authordate:iso8601)%(end)' "refs/tags/$tag")
-      commit=$(git for-each-ref --format='%(objectname)' "refs/tags/$tag")
+      # Get tag date (taggerdate for annotated, authordate for lightweight)
+      date=$(git log -1 --format=%ai "$(git rev-parse "$tag")")
+      commit=$(git rev-parse "$tag")
       echo "  Date: $date"
       echo "  Commit: $commit"
       commit_msg=$(git log -1 --format=%s "$commit")
@@ -80,13 +80,16 @@ git branch -vv | while read -r line; do
   echo ""
 done
 
-# Stashes section (unchanged)
+# Stashes section
 echo -e "${COLOR_STASH}===== Stashes =====${COLOR_RESET}"
-git stash list --format="%gd%09%ai%09%gs" | while IFS=$'\t' read -r stash_ref date subject; do
-  if [ -n "$stash_ref" ]; then
+git stash list | while read -r stash_line; do
+  if [ -n "$stash_line" ]; then
+    stash_ref=$(echo "$stash_line" | cut -d: -f1)
+    date=$(echo "$stash_line" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\} [-+][0-9]\{4\}')
+    subject=$(echo "$stash_line" | cut -d: -f3- | sed 's/^[ \t]*//')
+    branch=$(echo "$subject" | sed 's/^On \([^:]*\):.*/\1/')
     echo "Stash: $stash_ref"
     echo "  Date: $date"
-    branch=$(echo "$subject" | sed 's/^WIP on \([^:]*\):.*/\1/')
     echo "  Branch: $branch"
     echo "  Changes:"
     git stash show --name-only "$stash_ref" | sed 's/^/    - /'
