@@ -39,7 +39,7 @@ if [ -n "$local_tags" ]; then
     if ! echo "$remote_tags" | grep -Fx "$tag" > /dev/null; then
       # Tag is local-only
       echo "Tag: $tag"
-      # Get tag date (taggerdate for annotated, authordate for lightweight)
+      # Get tag date (commit's author date)
       date=$(git log -1 --format=%ai "$(git rev-parse "$tag")")
       commit=$(git rev-parse "$tag")
       echo "  Date: $date"
@@ -57,8 +57,9 @@ else
   echo ""
 fi
 
-# Branches section (unchanged)
+# Branches section
 echo -e "${COLOR_BRANCH}===== Branches =====${COLOR_RESET}"
+found_branches=0
 git branch -vv | while read -r line; do
   branch=$(echo "$line" | sed 's/^\* //' | awk '{print $1}')
   if echo "$line" | grep -q '\[.*: ahead'; then
@@ -68,6 +69,7 @@ git branch -vv | while read -r line; do
   else
     continue
   fi
+  found_branches=1
   echo "Branch: $branch"
   last_commit_date=$(git log -1 --format=%ai "$branch")
   echo "  Last Commit Date: $last_commit_date"
@@ -79,15 +81,23 @@ git branch -vv | while read -r line; do
   echo "  Delete Command: git branch -d $branch"
   echo ""
 done
+if [ "$found_branches" -eq 0 ]; then
+  echo "No local branches found needing cleanup."
+  echo ""
+fi
 
 # Stashes section
 echo -e "${COLOR_STASH}===== Stashes =====${COLOR_RESET}"
+found_stashes=0
 git stash list | while read -r stash_line; do
   if [ -n "$stash_line" ]; then
+    found_stashes=1
     stash_ref=$(echo "$stash_line" | cut -d: -f1)
-    date=$(echo "$stash_line" | grep -o '[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\} [-+][0-9]\{4\}')
-    subject=$(echo "$stash_line" | cut -d: -f3- | sed 's/^[ \t]*//')
-    branch=$(echo "$subject" | sed 's/^On \([^:]*\):.*/\1/')
+    # Extract date using git show for reliability
+    date=$(git show -s --format=%ai "$stash_ref")
+    subject=$(echo "$stash_line" | cut -d: -f2- | sed 's/^[ \t]*//')
+    # Handle both "WIP on <branch>" and "On <branch>" formats
+    branch=$(echo "$subject" | sed -E 's/^(WIP on|On) ([^:]+):?.*/\2/' | sed 's/^[ \t]*//')
     echo "Stash: $stash_ref"
     echo "  Date: $date"
     echo "  Branch: $branch"
@@ -97,3 +107,7 @@ git stash list | while read -r stash_line; do
     echo ""
   fi
 done
+if [ "$found_stashes" -eq 0 ]; then
+  echo "No stashes found."
+  echo ""
+fi
