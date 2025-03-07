@@ -7,9 +7,6 @@ out/
 .idea_modules/
 /out/
 
-# File-based project format
-*.iws
-
 # JIRA plugin
 atlassian-ide-plugin.xml
 
