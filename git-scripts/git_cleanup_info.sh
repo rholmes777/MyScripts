@@ -1,113 +1,184 @@
 #!/bin/bash
+# git_cleanup_info.sh
+# Script to identify all potential changes in local Git repository workspaces
+# that are NOT pushed to any remotes (both upstream and origin)
 
-# Check if in a Git repository
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-  echo "Not in a Git repository"
-  exit 1
+# Function to check if a command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check if a remote exists
+remote_exists() {
+    git remote | grep -q "^$1$"
+}
+
+# Function to display header with green color
+display_header() {
+    GREEN='\033[0;32m'
+    NC='\033[0m' # No Color
+    echo -e "\n${GREEN}===== $1 =====${NC}\n"
+}
+
+# Check if script is run inside a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo "Error: Not a git repository"
+    exit 1
 fi
 
-# Set colors if output is a terminal
-if [[ -t 1 ]]; then
-  COLOR_TAG="\033[1;34m"  # Blue
-  COLOR_BRANCH="\033[1;32m"  # Green
-  COLOR_STASH="\033[1;33m"  # Yellow
-  COLOR_RESET="\033[0m"
-else
-  COLOR_TAG=""
-  COLOR_BRANCH=""
-  COLOR_STASH=""
-  COLOR_RESET=""
+# Check if git is installed
+if ! command_exists git; then
+    echo "Error: git is not installed"
+    exit 1
 fi
 
-# Print repository path
-repo_path=$(git rev-parse --show-toplevel)
-echo "Repository: $repo_path"
-echo ""
+# Get repository name
+repo_name=$(basename "$(git rev-parse --show-toplevel)")
+echo "Repository: $repo_name"
+echo "Date: $(date)"
+echo
 
-# Tags section
-echo -e "${COLOR_TAG}===== Tags (Local Only) =====${COLOR_RESET}"
-# Fetch remote tags for comparison (quietly)
-git fetch --tags --quiet 2>/dev/null
-# Get all local tags
-local_tags=$(git tag)
-if [ -n "$local_tags" ]; then
-  # Get all remote tags (stripping refs/tags/ prefix)
-  remote_tags=$(git ls-remote --tags upstream | awk '{print $2}' | sed 's/refs\/tags\///' | sed 's/\^{}$//')
-  # Process each local tag
-  echo "$local_tags" | while IFS= read -r tag; do
-    # Check if tag exists in remote_tags
-    if ! echo "$remote_tags" | grep -Fx "$tag" >/dev/null; then
-      # Tag is local-only
-      echo "Tag: $tag"
-      # Get tag date (commit's author date)
-      date=$(git log -1 --format=%ai "$(git rev-parse "$tag")")
-      commit=$(git rev-parse "$tag")
-      echo "  Date: $date"
-      echo "  Commit: $commit"
-      commit_msg=$(git log -1 --format=%s "$commit")
-      echo "  Commit Message: $commit_msg"
-      echo "  Files Changed:"
-      git show --name-only --format= "$commit" | sed 's/^/    - /'
-      echo "  Delete Command: git tag -d $tag"
-      echo ""
+# Get remote information
+remotes=()
+if remote_exists "upstream"; then
+    remotes+=("upstream")
+fi
+if remote_exists "origin"; then
+    remotes+=("origin")
+fi
+
+if [ ${#remotes[@]} -eq 0 ]; then
+    echo "Error: Neither 'upstream' nor 'origin' remotes found"
+    exit 1
+fi
+
+echo "Checking against remotes: ${remotes[*]}"
+
+# Fetch all remotes to ensure we have the latest data
+for remote in "${remotes[@]}"; do
+    echo "Fetching from $remote..."
+    git fetch "$remote" --tags --prune >/dev/null 2>&1
+done
+
+# Function to check if a branch exists in any remote
+branch_in_remotes() {
+    local branch=$1
+    for remote in "${remotes[@]}"; do
+        if git branch -r | grep -q "$remote/$branch$"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Function to check if a tag exists in any remote
+tag_in_remotes() {
+    local tag=$1
+    for remote in "${remotes[@]}"; do
+        if git ls-remote --tags "$remote" | grep -q "refs/tags/$tag$"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Check local branches that don't exist in remotes
+display_header "LOCAL BRANCHES NOT IN REMOTES"
+found_unpushed_branches=false
+
+for branch in $(git branch --format='%(refname:short)'); do
+    if ! branch_in_remotes "$branch"; then
+        found_unpushed_branches=true
+        commit_sha=$(git rev-parse "$branch")
+        author=$(git show -s --format="%an <%ae>" "$branch")
+        echo "Branch: $branch"
+        echo "  Commit: $commit_sha"
+        echo "  Author: $author"
+        echo "  Last commit message: $(git log -1 --pretty=%B "$branch" | head -1)"
+        echo "  Last commit date: $(git log -1 --pretty=%cd --date=local "$branch")"
+        echo "  Show command: git show $branch"
+        echo "  Delete command: git branch -D $branch"
+        echo
     fi
-  done
+done
+
+if [ "$found_unpushed_branches" = false ]; then
+    echo "No local branches found that aren't in remotes."
+    echo
+fi
+
+# Check for stashes
+display_header "STASHES"
+stash_list=$(git stash list)
+if [ -z "$stash_list" ]; then
+    echo "No stashes found."
+    echo
 else
-  echo "No local tags found."
-  echo ""
+    echo "$stash_list" | while read -r stash_line; do
+        stash_id=$(echo "$stash_line" | cut -d: -f1)
+        stash_sha=$(git rev-parse "$stash_id")
+        stash_message=$(echo "$stash_line" | cut -d: -f2-)
+        author=$(git show -s --format="%an <%ae>" "$stash_id")
+        echo "Stash: $stash_id $stash_message"
+        echo "  Commit: $stash_sha"
+        echo "  Author: $author"
+        echo "  Date: $(git show -s --format=%cd --date=local "$stash_id")"
+        echo "  Show command: git stash show -p $stash_id"
+        echo "  Delete command: git stash drop $stash_id"
+        echo
+    done
 fi
 
-# Branches section
-echo -e "${COLOR_BRANCH}===== Branches =====${COLOR_RESET}"
-found_branches=0
-git branch -vv | while read -r line; do
-  branch=$(echo "$line" | sed 's/^\* //' | awk '{print $1}')
-  if echo "$line" | grep -q '\[.*: ahead'; then
-    status="ahead"
-  elif ! echo "$line" | grep -q '\['; then
-    status="no upstream"
-  else
-    continue
-  fi
-  found_branches=1
-  echo "Branch: $branch"
-  last_commit_date=$(git log -1 --format=%ai "$branch")
-  echo "  Last Commit Date: $last_commit_date"
-  commit_msg=$(git log -1 --format=%s "$branch")
-  echo "  Commit Message: $commit_msg"
-  echo "  Files Changed:"
-  git show --name-only --format= "$branch" | sed 's/^/    - /'
-  echo "  Status: $status"
-  echo "  Delete Command: git branch -d $branch"
-  echo ""
+# Check local tags that don't exist in remotes
+display_header "LOCAL TAGS NOT IN REMOTES"
+found_unpushed_tags=false
+
+for tag in $(git tag); do
+    if ! tag_in_remotes "$tag"; then
+        found_unpushed_tags=true
+        tag_sha=$(git rev-parse "$tag")
+        author=$(git show -s --format="%an <%ae>" "$tag")
+        echo "Tag: $tag"
+        echo "  Commit: $tag_sha"
+        echo "  Author: $author"
+        echo "  Tag message: $(git tag -l -n1 "$tag" | sed 's/^[^ ]* *//')"
+        echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}")"
+        echo "  Show command: git show $tag"
+        echo "  Delete command: git tag -d $tag"
+        echo
+    fi
 done
-if [ "$found_branches" -eq 0 ]; then
-  echo "No local branches found needing cleanup."
-  echo ""
+
+if [ "$found_unpushed_tags" = false ]; then
+    echo "No local tags found that aren't in remotes."
+    echo
 fi
 
-# Stashes section
-echo -e "${COLOR_STASH}===== Stashes =====${COLOR_RESET}"
-found_stashes=0
-git stash list | while read -r stash_line; do
-  if [ -n "$stash_line" ]; then
-    found_stashes=1
-    stash_ref=$(echo "$stash_line" | cut -d: -f1)
-    # Extract date using git show for reliability
-    date=$(git show -s --format=%ai "$stash_ref")
-    subject=$(echo "$stash_line" | cut -d: -f2- | sed 's/^[ \t]*//')
-    # Handle both "WIP on <branch>" and "On <branch>" formats
-    branch=$(echo "$subject" | sed -E 's/^(WIP on|On) ([^:]+):?.*/\2/' | sed 's/^[ \t]*//')
-    echo "Stash: $stash_ref"
-    echo "  Date: $date"
-    echo "  Branch: $branch"
-    echo "  Changes:"
-    git stash show --name-only "$stash_ref" | sed 's/^/    - /'
-    echo "  Drop Command: git stash drop $stash_ref"
-    echo ""
-  fi
-done
-if [ "$found_stashes" -eq 0 ]; then
-  echo "No stashes found."
-  echo ""
+# Check for uncommitted changes
+display_header "UNCOMMITTED CHANGES"
+if git diff --quiet; then
+    if git diff --cached --quiet; then
+        echo "No uncommitted changes."
+    else
+        echo "Changes staged for commit:"
+        git diff --cached --stat
+    fi
+else
+    echo "Unstaged changes:"
+    git diff --stat
+    if ! git diff --cached --quiet; then
+        echo -e "\nStaged changes:"
+        git diff --cached --stat
+    fi
 fi
+
+# Check for untracked files
+display_header "UNTRACKED FILES"
+untracked_files=$(git ls-files --others --exclude-standard)
+if [ -z "$untracked_files" ]; then
+    echo "No untracked files."
+else
+    echo "$untracked_files"
+fi
+
+echo -e "\nDone."
