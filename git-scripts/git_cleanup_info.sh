@@ -8,8 +8,7 @@
 #
 # Options:
 #   --no-tags     Skip checking tags (much faster for repos with many tags)
-#   --no-fetch    Skip fetching from remotes (use local cache only)
-#   --fast        Equivalent to --no-tags --no-fetch (fastest mode)
+#   --fast        Same as --no-tags (fastest mode)
 
 # Function to check if a command exists
 command_exists() {
@@ -45,19 +44,14 @@ fi
 
 # Parse command line arguments
 NO_TAGS=false
-NO_FETCH=false
 
 for arg in "$@"; do
     case $arg in
         --no-tags)
             NO_TAGS=true
             ;;
-        --no-fetch)
-            NO_FETCH=true
-            ;;
         --fast)
             NO_TAGS=true
-            NO_FETCH=true
             ;;
     esac
 done
@@ -68,9 +62,6 @@ echo "Repository: $repo_name"
 echo "Date: $(date)"
 
 # Show which features are enabled/disabled
-if [ "$NO_FETCH" = true ]; then
-    echo "Mode: No fetch (using local cache)"
-fi
 if [ "$NO_TAGS" = true ]; then
     echo "Mode: No tags (skipping tag processing)"
 fi
@@ -93,23 +84,19 @@ fi
 echo "Checking against remotes: ${remotes[*]}"
 
 # Fetch all remotes to ensure we have the latest data
-if [ "$NO_FETCH" = false ]; then
-    echo "Fetching from remotes (this might take a while for repos with many branches/tags)..."
-    for remote in "${remotes[@]}"; do
-        echo "  - Fetching from $remote..."
-        # Use --no-tags to initially fetch without tags for performance
-        git fetch "$remote" --prune >/dev/null 2>&1
-    done
+echo "Fetching from remotes (this might take a while for repos with many branches/tags)..."
+for remote in "${remotes[@]}"; do
+    echo "  - Fetching from $remote..."
+    # Use --no-tags to initially fetch without tags for performance
+    git fetch "$remote" --prune >/dev/null 2>&1
+done
 
-    # Only fetch tags if we need to check tags
-    if [ "$NO_TAGS" = false ]; then
-        echo "  - Fetching tags (use --no-tags option to skip for faster execution)..."
-        for remote in "${remotes[@]}"; do
-            git fetch "$remote" --tags >/dev/null 2>&1
-        done
-    fi
-else
-    echo "Skipping fetch (using local cache)"
+# Only fetch tags if we need to check tags
+if [ "$NO_TAGS" = false ]; then
+    echo "  - Fetching tags (use --no-tags option to skip for faster execution)..."
+    for remote in "${remotes[@]}"; do
+        git fetch "$remote" --tags >/dev/null 2>&1
+    done
 fi
 
 # Function to check if a branch exists in any remote
@@ -124,56 +111,15 @@ branch_in_remotes() {
 }
 
 # Function to check if a tag exists in any remote
-# For NO_FETCH=true mode, we use a best-effort approach with limitations
 tag_in_remotes() {
     local tag=$1
 
-    if [ "$NO_FETCH" = true ]; then
-        # Create a simple approach for the no-fetch case that's reliable but limited
-        # It will tend to under-report remote tags, which is safer
-        # (better to show too many local-only tags than miss some)
-
-        # For each remote, try to find evidence that the tag exists remotely
-        for remote in "${remotes[@]}"; do
-            # Check if the tag was ever mentioned in a fetch or push operation
-            if git reflog | grep -q "fetch.*$remote.*tag $tag"; then
-                return 0
-            fi
-
-            if git reflog | grep -q "push.*$remote.*tag $tag"; then
-                return 0
-            fi
-        done
-
-        # If we're here, we found no evidence in the reflog
-        # Let's try one more approach - checking if tag points to a commit
-        # that exists in a remote branch
-        local tag_commit=$(git rev-list -n 1 "$tag" 2>/dev/null)
-
-        # If we can't get the commit, something is wrong with the tag
-        if [ -z "$tag_commit" ]; then
-            return 1
+    # Use ls-remote to check remote tags
+    for remote in "${remotes[@]}"; do
+        if git ls-remote --tags "$remote" 2>/dev/null | grep -q "refs/tags/$tag$"; then
+            return 0
         fi
-
-        # Check if any remote branches contain this commit
-        for remote in "${remotes[@]}"; do
-            if git branch -r --contains "$tag_commit" 2>/dev/null | grep -q "^  $remote/"; then
-                # This is a good indication the tag might exist remotely
-                # but not guaranteed
-                return 0
-            fi
-        done
-
-        # If we get here, assume the tag is local-only
-        return 1
-    else
-        # Use ls-remote to check remote tags (requires network)
-        for remote in "${remotes[@]}"; do
-            if git ls-remote --tags "$remote" 2>/dev/null | grep -q "refs/tags/$tag$"; then
-                return 0
-            fi
-        done
-    fi
+    done
 
     return 1
 }
