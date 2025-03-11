@@ -121,13 +121,33 @@ branch_in_remotes() {
 }
 
 # Function to check if a tag exists in any remote
+# When NO_FETCH is true, use a different approach that doesn't contact remotes
 tag_in_remotes() {
     local tag=$1
-    for remote in "${remotes[@]}"; do
-        if git ls-remote --tags "$remote" | grep -q "refs/tags/$tag$"; then
-            return 0
-        fi
-    done
+
+    if [ "$NO_FETCH" = true ]; then
+        # Check against locally cached remote tags
+        for remote in "${remotes[@]}"; do
+            if git show-ref --tags | grep -q "refs/remotes/$remote/tags/$tag$"; then
+                return 0
+            fi
+            # Also check if it's in the regular remote refs format
+            if git show-ref --tags | grep -q "refs/tags/$tag$"; then
+                # Check if it's also in the remote (using local cache only)
+                if git branch -r | grep -q "$remote/.*$"; then
+                    return 0
+                fi
+            fi
+        done
+    else
+        # Use ls-remote to check remote tags (requires network)
+        for remote in "${remotes[@]}"; do
+            if git ls-remote --tags "$remote" 2>/dev/null | grep -q "refs/tags/$tag$"; then
+                return 0
+            fi
+        done
+    fi
+
     return 1
 }
 
@@ -193,6 +213,12 @@ if [ "$NO_TAGS" = false ]; then
         tag_count=0
         total_tags=$(echo "$local_tags" | wc -l)
 
+        # Warning about no-fetch mode
+        if [ "$NO_FETCH" = true ]; then
+            echo "Note: Running in --no-fetch mode. Using locally cached remote information."
+            echo "Results may be incomplete if local cache is out of date."
+        fi
+
         echo "$local_tags" | while read -r tag; do
             # Show progress every 10 tags
             tag_count=$((tag_count + 1))
@@ -200,15 +226,15 @@ if [ "$NO_TAGS" = false ]; then
                 echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
             fi
 
-            if ! tag_in_remotes "$tag"; then
+            if ! tag_in_remotes "$tag" 2>/dev/null; then
                 found_unpushed_tags=true
-                tag_sha=$(git rev-parse "$tag")
-                author=$(git show -s --format="%an <%ae>" "$tag")
+                tag_sha=$(git rev-parse "$tag" 2>/dev/null)
+                author=$(git show -s --format="%an <%ae>" "$tag" 2>/dev/null)
                 echo -e "\nTag: $tag"
                 echo "  Commit: $tag_sha"
                 echo "  Author: $author"
-                echo "  Tag message: $(git tag -l -n1 "$tag" | sed 's/^[^ ]* *//')"
-                echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}")"
+                echo "  Tag message: $(git tag -l -n1 "$tag" 2>/dev/null | sed 's/^[^ ]* *//')"
+                echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}" 2>/dev/null)"
                 echo "  Show command: git show $tag"
                 echo "  Delete command: git tag -d $tag"
                 echo
