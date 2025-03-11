@@ -1,61 +1,3 @@
-# Check local tags that don't exist in remotes (if not disabled)
-if [ "$NO_TAGS" = false ]; then
-    display_header "LOCAL TAGS NOT IN REMOTES"
-    found_unpushed_tags=false
-
-    # Get local tags first
-    local_tags=$(git tag)
-    if [ -z "$local_tags" ]; then
-        echo "No local tags found."
-        echo
-    else
-        # Warning about limitations in no-fetch mode
-        if [ "$NO_FETCH" = true ]; then
-            echo -e "${YELLOW}Warning: Running in --no-fetch mode. Tag detection has limitations without fetching.${NC}"
-            echo -e "${YELLOW}For most accurate results, run without --no-fetch option.${NC}"
-            echo
-        fi
-
-        echo "Comparing local tags against remotes..."
-        tag_count=0
-        total_tags=$(echo "$local_tags" | wc -l)
-
-        echo "$local_tags" | while read -r tag; do
-            # Show progress every 10 tags
-            tag_count=$((tag_count + 1))
-            if [ $((tag_count % 10)) -eq 0 ]; then
-                echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
-            fi
-
-            if ! tag_in_remotes "$tag" 2>/dev/null; then
-                found_unpushed_tags=true
-                tag_sha=$(git rev-parse "$tag" 2>/dev/null)
-                author=$(git show -s --format="%an <%ae>" "$tag" 2>/dev/null)
-                echo -e "\nTag: $tag"
-                echo "  Commit: $tag_sha"
-                echo "  Author: $author"
-                echo "  Tag message: $(git tag -l -n1 "$tag" 2>/dev/null | sed 's/^[^ ]* *//')"
-                echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}" 2>/dev/null)"
-                echo "  Show command: git show $tag"
-                echo "  Delete command: git tag -d $tag"
-                echo
-            fi
-        done
-
-        # Final progress update
-        echo -e "  Progress: $total_tags/$total_tags tags processed"
-
-        if [ "$found_unpushed_tags" = false ]; then
-            echo "No local tags found that aren't in remotes."
-        fi
-        echo
-    fi
-else
-    display_header "LOCAL TAGS NOT IN REMOTES"
-    echo "Tag checking disabled (--no-tags option)."
-    echo "Run without --no-tags to check tags (slower)."
-    echo
-fi
 #!/bin/bash
 # git_cleanup_info.sh
 # Script to identify all potential changes in local Git repository workspaces
@@ -304,18 +246,30 @@ if [ "$NO_TAGS" = false ]; then
             echo "Results may be incomplete if local cache is out of date."
         fi
 
-        echo "$local_tags" | while read -r tag; do
-            # Show progress every 10 tags
+        # Use process substitution instead of a pipeline to preserve variable values
+        # This keeps changes to found_unpushed_tags visible to the parent shell
+        tag_displayed=false
+        while read -r tag; do
+            # Show progress every 10 tags, but only if we haven't displayed any tags yet
             tag_count=$((tag_count + 1))
-            if [ $((tag_count % 10)) -eq 0 ]; then
+            if [ "$tag_displayed" = false ] && [ $((tag_count % 10)) -eq 0 ]; then
+                # Use carriage return to overwrite the previous progress line
                 echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
             fi
 
             if ! tag_in_remotes "$tag" 2>/dev/null; then
                 found_unpushed_tags=true
+
+                # Clear the progress line if we're about to display a tag
+                if [ "$tag_displayed" = false ]; then
+                    # Print enough spaces to overwrite the progress line, then carriage return
+                    echo -ne "                                            \r"
+                    tag_displayed=true
+                fi
+
                 tag_sha=$(git rev-parse "$tag" 2>/dev/null)
                 author=$(git show -s --format="%an <%ae>" "$tag" 2>/dev/null)
-                echo -e "\nTag: $tag"
+                echo "Tag: $tag"
                 echo "  Commit: $tag_sha"
                 echo "  Author: $author"
                 echo "  Tag message: $(git tag -l -n1 "$tag" 2>/dev/null | sed 's/^[^ ]* *//')"
@@ -324,10 +278,12 @@ if [ "$NO_TAGS" = false ]; then
                 echo "  Delete command: git tag -d $tag"
                 echo
             fi
-        done
+        done < <(echo "$local_tags")
 
-        # Final progress update
-        echo -e "  Progress: $total_tags/$total_tags tags processed"
+        # Final progress update - only show if no tags were displayed
+        if [ "$tag_displayed" = false ]; then
+            echo "  Progress: $total_tags/$total_tags tags processed"
+        fi
 
         if [ "$found_unpushed_tags" = false ]; then
             echo "No local tags found that aren't in remotes."
