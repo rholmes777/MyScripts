@@ -2,6 +2,14 @@
 # git_cleanup_info.sh
 # Script to identify all potential changes in local Git repository workspaces
 # that are NOT pushed to any remotes (both upstream and origin)
+#
+# Usage:
+#   ./git_cleanup_info.sh [options]
+#
+# Options:
+#   --no-tags     Skip checking tags (much faster for repos with many tags)
+#   --no-fetch    Skip fetching from remotes (use local cache only)
+#   --fast        Equivalent to --no-tags --no-fetch (fastest mode)
 
 # Function to check if a command exists
 command_exists() {
@@ -32,10 +40,37 @@ if ! command_exists git; then
     exit 1
 fi
 
+# Parse command line arguments
+NO_TAGS=false
+NO_FETCH=false
+
+for arg in "$@"; do
+    case $arg in
+        --no-tags)
+            NO_TAGS=true
+            ;;
+        --no-fetch)
+            NO_FETCH=true
+            ;;
+        --fast)
+            NO_TAGS=true
+            NO_FETCH=true
+            ;;
+    esac
+done
+
 # Get repository name
 repo_name=$(basename "$(git rev-parse --show-toplevel)")
 echo "Repository: $repo_name"
 echo "Date: $(date)"
+
+# Show which features are enabled/disabled
+if [ "$NO_FETCH" = true ]; then
+    echo "Mode: No fetch (using local cache)"
+fi
+if [ "$NO_TAGS" = true ]; then
+    echo "Mode: No tags (skipping tag processing)"
+fi
 echo
 
 # Get remote information
@@ -55,10 +90,24 @@ fi
 echo "Checking against remotes: ${remotes[*]}"
 
 # Fetch all remotes to ensure we have the latest data
-for remote in "${remotes[@]}"; do
-    echo "Fetching from $remote..."
-    git fetch "$remote" --tags --prune >/dev/null 2>&1
-done
+if [ "$NO_FETCH" = false ]; then
+    echo "Fetching from remotes (this might take a while for repos with many branches/tags)..."
+    for remote in "${remotes[@]}"; do
+        echo "  - Fetching from $remote..."
+        # Use --no-tags to initially fetch without tags for performance
+        git fetch "$remote" --prune >/dev/null 2>&1
+    done
+
+    # Only fetch tags if we need to check tags
+    if [ "$NO_TAGS" = false ]; then
+        echo "  - Fetching tags (use --no-tags option to skip for faster execution)..."
+        for remote in "${remotes[@]}"; do
+            git fetch "$remote" --tags >/dev/null 2>&1
+        done
+    fi
+else
+    echo "Skipping fetch (using local cache)"
+fi
 
 # Function to check if a branch exists in any remote
 branch_in_remotes() {
@@ -129,28 +178,55 @@ else
     done
 fi
 
-# Check local tags that don't exist in remotes
-display_header "LOCAL TAGS NOT IN REMOTES"
-found_unpushed_tags=false
+# Check local tags that don't exist in remotes (if not disabled)
+if [ "$NO_TAGS" = false ]; then
+    display_header "LOCAL TAGS NOT IN REMOTES"
+    found_unpushed_tags=false
 
-for tag in $(git tag); do
-    if ! tag_in_remotes "$tag"; then
-        found_unpushed_tags=true
-        tag_sha=$(git rev-parse "$tag")
-        author=$(git show -s --format="%an <%ae>" "$tag")
-        echo "Tag: $tag"
-        echo "  Commit: $tag_sha"
-        echo "  Author: $author"
-        echo "  Tag message: $(git tag -l -n1 "$tag" | sed 's/^[^ ]* *//')"
-        echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}")"
-        echo "  Show command: git show $tag"
-        echo "  Delete command: git tag -d $tag"
+    # Get local tags first
+    local_tags=$(git tag)
+    if [ -z "$local_tags" ]; then
+        echo "No local tags found."
+        echo
+    else
+        echo "Comparing ${#local_tags[@]} local tags against remotes..."
+        local tag_count=0
+        total_tags=$(echo "$local_tags" | wc -l)
+
+        echo "$local_tags" | while read -r tag; do
+            # Show progress every 10 tags
+            tag_count=$((tag_count + 1))
+            if [ $((tag_count % 10)) -eq 0 ]; then
+                echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
+            fi
+
+            if ! tag_in_remotes "$tag"; then
+                found_unpushed_tags=true
+                tag_sha=$(git rev-parse "$tag")
+                author=$(git show -s --format="%an <%ae>" "$tag")
+                echo -e "\nTag: $tag"
+                echo "  Commit: $tag_sha"
+                echo "  Author: $author"
+                echo "  Tag message: $(git tag -l -n1 "$tag" | sed 's/^[^ ]* *//')"
+                echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}")"
+                echo "  Show command: git show $tag"
+                echo "  Delete command: git tag -d $tag"
+                echo
+            fi
+        done
+
+        # Final progress update
+        echo -e "  Progress: $total_tags/$total_tags tags processed"
+
+        if [ "$found_unpushed_tags" = false ]; then
+            echo "No local tags found that aren't in remotes."
+        fi
         echo
     fi
-done
-
-if [ "$found_unpushed_tags" = false ]; then
-    echo "No local tags found that aren't in remotes."
+else
+    display_header "LOCAL TAGS NOT IN REMOTES"
+    echo "Tag checking disabled (--no-tags option)."
+    echo "Run without --no-tags to check tags (slower)."
     echo
 fi
 
