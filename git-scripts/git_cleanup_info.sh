@@ -189,8 +189,8 @@ if [ "$NO_TAGS" = false ]; then
         echo "No local tags found."
         echo
     else
-        echo "Comparing ${#local_tags[@]} local tags against remotes..."
-        local tag_count=0
+        echo "Comparing local tags against remotes..."
+        tag_count=0
         total_tags=$(echo "$local_tags" | wc -l)
 
         echo "$local_tags" | while read -r tag; do
