@@ -1,3 +1,53 @@
+# Check local tags that don't exist in remotes (if not disabled)
+if [ "$NO_TAGS" = false ]; then
+    display_header "LOCAL TAGS NOT IN REMOTES"
+    found_unpushed_tags=false
+
+    # Get local tags first
+    local_tags=$(git tag)
+    if [ -z "$local_tags" ]; then
+        echo "No local tags found."
+        echo
+    else
+        # Warning about limitations in no-fetch mode
+        if [ "$NO_FETCH" = true ]; then
+            echo -e "${YELLOW}Warning: Running in --no-fetch mode. Tag detection has limitations without fetching.${NC}"
+            echo -e "${YELLOW}For most accurate results, run without --no-fetch option.${NC}"
+            echo
+        fi
+
+        echo "Comparing local tags against remotes..."
+        tag_count=0
+        total_tags=$(echo "$local_tags" | wc -l)
+
+        echo "$local_tags" | while read -r tag; do
+            # Show progress every 10 tags
+            tag_count=$((tag_count + 1))
+            if [ $((tag_count % 10)) -eq 0 ]; then
+                echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
+            fi
+
+            if ! tag_in_remotes "$tag" 2>/dev/null; then
+                found_unpushed_tags=true
+                tag_sha=$(git rev-parse "$tag" 2>/dev/null)
+                author=$(git show -s --format="%an <%ae>" "$tag" 2>/dev/null)
+                echo -e "\nTag: $tag"
+                echo "  Commit: $tag_sha"
+                echo "  Author: $author"
+                echo "  Tag message: $(git tag -l -n1 "$tag" 2>/dev/null | sed 's/^[^ ]* *//')"
+                echo "  Tag date: $(git log -1 --pretty=%cd --date=local "$tag^{commit}" 2>/dev/null)"
+                echo "  Show command: git show $tag"
+                echo "  Delete command: git tag -d $tag"
+                echo
+            fi
+        done
+
+        # Final progress update
+        echo -e "  Progress: $total_tags/$total_tags tags processed"
+
+        if [ "$found_unpushed_tags" = false ]; then
+            echo "No local tags found that aren't in remotes."
+
 #!/bin/bash
 # git_cleanup_info.sh
 # Script to identify all potential changes in local Git repository workspaces
@@ -27,6 +77,9 @@ display_header() {
     NC='\033[0m' # No Color
     echo -e "\n${GREEN}===== $1 =====${NC}\n"
 }
+
+# Define other colors
+YELLOW='\033[1;33m'
 
 # Check if script is run inside a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -121,24 +174,48 @@ branch_in_remotes() {
 }
 
 # Function to check if a tag exists in any remote
-# When NO_FETCH is true, use a different approach that doesn't contact remotes
+# For NO_FETCH=true mode, we use a best-effort approach with limitations
 tag_in_remotes() {
     local tag=$1
 
     if [ "$NO_FETCH" = true ]; then
-        # Check against locally cached remote tags
+        # Create a simple approach for the no-fetch case that's reliable but limited
+        # It will tend to under-report remote tags, which is safer
+        # (better to show too many local-only tags than miss some)
+
+        # For each remote, try to find evidence that the tag exists remotely
         for remote in "${remotes[@]}"; do
-            if git show-ref --tags | grep -q "refs/remotes/$remote/tags/$tag$"; then
+            # Check if the tag was ever mentioned in a fetch or push operation
+            if git reflog | grep -q "fetch.*$remote.*tag $tag"; then
                 return 0
             fi
-            # Also check if it's in the regular remote refs format
-            if git show-ref --tags | grep -q "refs/tags/$tag$"; then
-                # Check if it's also in the remote (using local cache only)
-                if git branch -r | grep -q "$remote/.*$"; then
-                    return 0
-                fi
+
+            if git reflog | grep -q "push.*$remote.*tag $tag"; then
+                return 0
             fi
         done
+
+        # If we're here, we found no evidence in the reflog
+        # Let's try one more approach - checking if tag points to a commit
+        # that exists in a remote branch
+        local tag_commit=$(git rev-list -n 1 "$tag" 2>/dev/null)
+
+        # If we can't get the commit, something is wrong with the tag
+        if [ -z "$tag_commit" ]; then
+            return 1
+        fi
+
+        # Check if any remote branches contain this commit
+        for remote in "${remotes[@]}"; do
+            if git branch -r --contains "$tag_commit" 2>/dev/null | grep -q "^  $remote/"; then
+                # This is a good indication the tag might exist remotely
+                # but not guaranteed
+                return 0
+            fi
+        done
+
+        # If we get here, assume the tag is local-only
+        return 1
     else
         # Use ls-remote to check remote tags (requires network)
         for remote in "${remotes[@]}"; do
