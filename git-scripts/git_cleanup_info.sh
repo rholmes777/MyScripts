@@ -47,7 +47,15 @@ if [ "$NO_TAGS" = false ]; then
 
         if [ "$found_unpushed_tags" = false ]; then
             echo "No local tags found that aren't in remotes."
-
+        fi
+        echo
+    fi
+else
+    display_header "LOCAL TAGS NOT IN REMOTES"
+    echo "Tag checking disabled (--no-tags option)."
+    echo "Run without --no-tags to check tags (slower)."
+    echo
+fi
 #!/bin/bash
 # git_cleanup_info.sh
 # Script to identify all potential changes in local Git repository workspaces
