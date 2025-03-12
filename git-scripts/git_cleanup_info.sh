@@ -195,29 +195,26 @@ tag_in_remotes() {
     local escaped_tag
     escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
 
-    # Use ls-remote to check remote tags
+    # IMPORTANT: Check EACH remote individually, and only return "found" if the tag exists in ANY remote
     for remote in "${remotes[@]}"; do
-        # Get all remote tags for current remote - fetch only once per remote for efficiency
-        local remote_tags_output
-        remote_tags_output=$(git ls-remote --tags "$remote" 2>/dev/null)
+        # Get list of tags for this remote
+        local remote_tags
+        remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null)
 
-        if [ -z "$remote_tags_output" ]; then
-            continue  # Skip this remote if there was an error or no tags
+        if [ -z "$remote_tags" ]; then
+            continue  # Skip empty remote or error
         fi
 
-        # Debug the output for troubleshooting (uncomment if needed)
-        # echo "Remote tags for $remote:"
-        # echo "$remote_tags_output"
+        # Debug output to check what we're matching against
+        # echo "Checking for tag '$tag' in remote '$remote'"
+        # echo "$remote_tags" | grep "refs/tags/$escaped_tag"
 
-        # Use awk for more precise matching - this ensures we match tab characters correctly
-        # and handles the exact pattern we're looking for
-        if echo "$remote_tags_output" | awk -v tag="$escaped_tag" '
-            $2 == "refs/tags/" tag || $2 == "refs/tags/" tag "^{}" {found=1; exit}
-            END {exit !found}
-        '; then
-            # Tag found in remote
+        # Check for exact tag match - either refs/tags/tagname or refs/tags/tagname^{}
+        if echo "$remote_tags" | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag$" ||
+           echo "$remote_tags" | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag\\^{}$"; then
+            # Tag found in this remote
             tag_found=0  # Set to found (0 = true in bash)
-            break  # No need to check other remotes
+            break
         fi
     done
 
