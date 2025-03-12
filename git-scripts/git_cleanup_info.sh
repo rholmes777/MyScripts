@@ -197,7 +197,7 @@ tag_in_remotes() {
 
     # Use ls-remote to check remote tags
     for remote in "${remotes[@]}"; do
-        # Get all remote tags for current remote
+        # Get all remote tags for current remote - fetch only once per remote for efficiency
         local remote_tags_output
         remote_tags_output=$(git ls-remote --tags "$remote" 2>/dev/null)
 
@@ -205,17 +205,17 @@ tag_in_remotes() {
             continue  # Skip this remote if there was an error or no tags
         fi
 
-        # Check if this exact tag name exists
-        # Format is: <hash><tab>refs/tags/<tagname>
-        if echo "$remote_tags_output" | grep -q $'\t'"refs/tags/$escaped_tag$"; then
-            # Tag found
-            tag_found=0  # Set to found (0 = true in bash)
-            break  # No need to check other remotes
-        fi
+        # Debug the output for troubleshooting (uncomment if needed)
+        # echo "Remote tags for $remote:"
+        # echo "$remote_tags_output"
 
-        # Also check for annotated tags which have ^{} suffix
-        if echo "$remote_tags_output" | grep -q $'\t'"refs/tags/$escaped_tag\\^{}$"; then
-            # Annotated tag found
+        # Use awk for more precise matching - this ensures we match tab characters correctly
+        # and handles the exact pattern we're looking for
+        if echo "$remote_tags_output" | awk -v tag="$escaped_tag" '
+            $2 == "refs/tags/" tag || $2 == "refs/tags/" tag "^{}" {found=1; exit}
+            END {exit !found}
+        '; then
+            # Tag found in remote
             tag_found=0  # Set to found (0 = true in bash)
             break  # No need to check other remotes
         fi
