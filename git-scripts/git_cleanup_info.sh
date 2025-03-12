@@ -8,8 +8,11 @@
 #
 # Options:
 #   --tags        Check only tags
+#   --branches    Check only branches
+#   --stashes     Check only stashes
 #   --no-tags     Skip checking tags (much faster for repos with many tags)
 #   --fast        Same as --no-tags (fastest mode)
+#   --help        Show this help message
 
 # Function to check if a command exists
 command_exists() {
@@ -26,6 +29,22 @@ display_header() {
     GREEN='\033[0;32m'
     NC='\033[0m' # No Color
     echo -e "\n${GREEN}===== $1 =====${NC}\n"
+}
+
+# Function to display help message
+show_help() {
+    echo "Usage: $(basename "$0") [options]"
+    echo
+    echo "Options:"
+    echo "  --tags        Check only tags"
+    echo "  --branches    Check only branches"
+    echo "  --stashes     Check only stashes"
+    echo "  --no-tags     Skip checking tags (much faster for repos with many tags)"
+    echo "  --fast        Same as --no-tags (fastest mode)"
+    echo "  --help        Show this help message"
+    echo
+    echo "With no options, performs all checks."
+    exit 0
 }
 
 # Define other colors
@@ -45,21 +64,61 @@ fi
 
 # Parse command line arguments
 NO_TAGS=false
-ONLY_TAGS=false
+CHECK_TAGS=true
+CHECK_BRANCHES=true
+CHECK_STASHES=true
+INVALID_ARG=false
 
-for arg in "$@"; do
-    case $arg in
-        --no-tags)
-            NO_TAGS=true
-            ;;
-        --fast)
-            NO_TAGS=true
-            ;;
-        --tags)
-            ONLY_TAGS=true
-            ;;
-    esac
-done
+# No arguments means check everything
+if [ $# -eq 0 ]; then
+    CHECK_TAGS=true
+    CHECK_BRANCHES=true
+    CHECK_STASHES=true
+else
+    # If any argument is provided, default to checking nothing
+    # We'll enable only what's explicitly requested
+    CHECK_TAGS=false
+    CHECK_BRANCHES=false
+    CHECK_STASHES=false
+
+    for arg in "$@"; do
+        case $arg in
+            --help)
+                show_help
+                ;;
+            --no-tags)
+                NO_TAGS=true
+                ;;
+            --fast)
+                NO_TAGS=true
+                ;;
+            --tags)
+                CHECK_TAGS=true
+                ;;
+            --branches)
+                CHECK_BRANCHES=true
+                ;;
+            --stashes)
+                CHECK_STASHES=true
+                ;;
+            *)
+                INVALID_ARG=true
+                ;;
+        esac
+    done
+
+    # Handle invalid arguments
+    if [ "$INVALID_ARG" = true ]; then
+        echo "Error: Invalid argument(s) provided"
+        echo "Run '$(basename "$0") --help' for usage information"
+        exit 1
+    fi
+fi
+
+# If --no-tags is specified, it overrides --tags
+if [ "$NO_TAGS" = true ]; then
+    CHECK_TAGS=false
+fi
 
 # Get repository name
 repo_name=$(basename "$(git rev-parse --show-toplevel)")
@@ -67,12 +126,20 @@ echo "Repository: $repo_name"
 echo "Date: $(date)"
 
 # Show which features are enabled/disabled
-if [ "$NO_TAGS" = true ]; then
-    echo "Mode: No tags (skipping tag processing)"
-elif [ "$ONLY_TAGS" = true ]; then
-    echo "Mode: Tags only"
+echo -n "Mode: "
+if [ "$CHECK_TAGS" = true ] && [ "$CHECK_BRANCHES" = true ] && [ "$CHECK_STASHES" = true ]; then
+    echo "Full scan"
 else
-    echo "Mode: Full scan"
+    features=()
+    [ "$CHECK_BRANCHES" = true ] && features+=("Branches")
+    [ "$CHECK_STASHES" = true ] && features+=("Stashes")
+    [ "$CHECK_TAGS" = true ] && features+=("Tags")
+
+    if [ ${#features[@]} -eq 0 ]; then
+        echo "No checks enabled (use --help for options)"
+    else
+        echo "Checking ${features[*]}"
+    fi
 fi
 echo
 
@@ -101,7 +168,7 @@ for remote in "${remotes[@]}"; do
 done
 
 # Only fetch tags if we need to check tags
-if [ "$NO_TAGS" = false ]; then
+if [ "$CHECK_TAGS" = true ]; then
     echo "  - Fetching tags (use --no-tags option to skip for faster execution)..."
     for remote in "${remotes[@]}"; do
         git fetch "$remote" --tags >/dev/null 2>&1
@@ -122,22 +189,43 @@ branch_in_remotes() {
 # Function to check if a tag exists in any remote
 tag_in_remotes() {
     local tag=$1
+    local tag_found=1  # Default to not found (1 = false in bash)
+
+    # Escape tag name for grep (special characters like ., +, etc.)
+    local escaped_tag
+    escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
 
     # Use ls-remote to check remote tags
     for remote in "${remotes[@]}"; do
-        # The format from ls-remote is: <hash>\trefs/tags/<tagname>
-        # We need to escape the tag name for regex and use proper pattern
-        escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
-        if git ls-remote --tags "$remote" 2>/dev/null | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag$"; then
-            return 0
+        # Get all remote tags for current remote
+        local remote_tags_output
+        remote_tags_output=$(git ls-remote --tags "$remote" 2>/dev/null)
+
+        if [ -z "$remote_tags_output" ]; then
+            continue  # Skip this remote if there was an error or no tags
+        fi
+
+        # Check if this exact tag name exists
+        # Format is: <hash><tab>refs/tags/<tagname>
+        if echo "$remote_tags_output" | grep -q $'\t'"refs/tags/$escaped_tag$"; then
+            # Tag found
+            tag_found=0  # Set to found (0 = true in bash)
+            break  # No need to check other remotes
+        fi
+
+        # Also check for annotated tags which have ^{} suffix
+        if echo "$remote_tags_output" | grep -q $'\t'"refs/tags/$escaped_tag\\^{}$"; then
+            # Annotated tag found
+            tag_found=0  # Set to found (0 = true in bash)
+            break  # No need to check other remotes
         fi
     done
 
-    return 1
+    return $tag_found
 }
 
-# Check local branches that don't exist in remotes (skip if --tags)
-if [ "$ONLY_TAGS" = false ]; then
+# Check local branches that don't exist in remotes
+if [ "$CHECK_BRANCHES" = true ]; then
     display_header "LOCAL BRANCHES NOT IN REMOTES"
     found_unpushed_branches=false
 
@@ -161,8 +249,10 @@ if [ "$ONLY_TAGS" = false ]; then
         echo "No local branches found that aren't in remotes."
         echo
     fi
+fi
 
-    # Check for stashes
+# Check for stashes
+if [ "$CHECK_STASHES" = true ]; then
     display_header "STASHES"
     stash_list=$(git stash list)
     if [ -z "$stash_list" ]; then
@@ -185,8 +275,8 @@ if [ "$ONLY_TAGS" = false ]; then
     fi
 fi
 
-# Check local tags that don't exist in remotes (if not disabled)
-if [ "$NO_TAGS" = false ]; then
+# Check local tags that don't exist in remotes
+if [ "$CHECK_TAGS" = true ]; then
     display_header "LOCAL TAGS NOT IN REMOTES"
     found_unpushed_tags=false
 
@@ -241,18 +331,13 @@ if [ "$NO_TAGS" = false ]; then
 
         if [ "$found_unpushed_tags" = false ]; then
             echo "No local tags found that aren't in remotes."
+            echo
         fi
-        echo
     fi
-else
-    display_header "LOCAL TAGS NOT IN REMOTES"
-    echo "Tag checking disabled (--no-tags option)."
-    echo "Run without --no-tags to check tags (slower)."
-    echo
 fi
 
-# Check for uncommitted changes (skip if --tags)
-if [ "$ONLY_TAGS" = false ]; then
+# Check for uncommitted changes
+if [ "$CHECK_BRANCHES" = true ]; then
     display_header "UNCOMMITTED CHANGES"
     if git diff --quiet; then
         if git diff --cached --quiet; then
