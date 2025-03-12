@@ -7,6 +7,7 @@
 #   ./git_cleanup_info.sh [options]
 #
 # Options:
+#   --tags        Check only tags
 #   --no-tags     Skip checking tags (much faster for repos with many tags)
 #   --fast        Same as --no-tags (fastest mode)
 
@@ -44,6 +45,7 @@ fi
 
 # Parse command line arguments
 NO_TAGS=false
+ONLY_TAGS=false
 
 for arg in "$@"; do
     case $arg in
@@ -52,6 +54,9 @@ for arg in "$@"; do
             ;;
         --fast)
             NO_TAGS=true
+            ;;
+        --tags)
+            ONLY_TAGS=true
             ;;
     esac
 done
@@ -64,6 +69,10 @@ echo "Date: $(date)"
 # Show which features are enabled/disabled
 if [ "$NO_TAGS" = true ]; then
     echo "Mode: No tags (skipping tag processing)"
+elif [ "$ONLY_TAGS" = true ]; then
+    echo "Mode: Tags only"
+else
+    echo "Mode: Full scan"
 fi
 echo
 
@@ -116,7 +125,10 @@ tag_in_remotes() {
 
     # Use ls-remote to check remote tags
     for remote in "${remotes[@]}"; do
-        if git ls-remote --tags "$remote" 2>/dev/null | grep -q "refs/tags/$tag$"; then
+        # The format from ls-remote is: <hash>\trefs/tags/<tagname>
+        # We need to escape the tag name for regex and use proper pattern
+        escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
+        if git ls-remote --tags "$remote" 2>/dev/null | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag$"; then
             return 0
         fi
     done
@@ -124,51 +136,53 @@ tag_in_remotes() {
     return 1
 }
 
-# Check local branches that don't exist in remotes
-display_header "LOCAL BRANCHES NOT IN REMOTES"
-found_unpushed_branches=false
+# Check local branches that don't exist in remotes (skip if --tags)
+if [ "$ONLY_TAGS" = false ]; then
+    display_header "LOCAL BRANCHES NOT IN REMOTES"
+    found_unpushed_branches=false
 
-for branch in $(git branch --format='%(refname:short)'); do
-    if ! branch_in_remotes "$branch"; then
-        found_unpushed_branches=true
-        commit_sha=$(git rev-parse "$branch")
-        author=$(git show -s --format="%an <%ae>" "$branch")
-        echo "Branch: $branch"
-        echo "  Commit: $commit_sha"
-        echo "  Author: $author"
-        echo "  Last commit message: $(git log -1 --pretty=%B "$branch" | head -1)"
-        echo "  Last commit date: $(git log -1 --pretty=%cd --date=local "$branch")"
-        echo "  Show command: git show $branch"
-        echo "  Delete command: git branch -D $branch"
+    for branch in $(git branch --format='%(refname:short)'); do
+        if ! branch_in_remotes "$branch"; then
+            found_unpushed_branches=true
+            commit_sha=$(git rev-parse "$branch")
+            author=$(git show -s --format="%an <%ae>" "$branch")
+            echo "Branch: $branch"
+            echo "  Commit: $commit_sha"
+            echo "  Author: $author"
+            echo "  Last commit message: $(git log -1 --pretty=%B "$branch" | head -1)"
+            echo "  Last commit date: $(git log -1 --pretty=%cd --date=local "$branch")"
+            echo "  Show command: git show $branch"
+            echo "  Delete command: git branch -D $branch"
+            echo
+        fi
+    done
+
+    if [ "$found_unpushed_branches" = false ]; then
+        echo "No local branches found that aren't in remotes."
         echo
     fi
-done
 
-if [ "$found_unpushed_branches" = false ]; then
-    echo "No local branches found that aren't in remotes."
-    echo
-fi
-
-# Check for stashes
-display_header "STASHES"
-stash_list=$(git stash list)
-if [ -z "$stash_list" ]; then
-    echo "No stashes found."
-    echo
-else
-    echo "$stash_list" | while read -r stash_line; do
-        stash_id=$(echo "$stash_line" | cut -d: -f1)
-        stash_sha=$(git rev-parse "$stash_id")
-        stash_message=$(echo "$stash_line" | cut -d: -f2-)
-        author=$(git show -s --format="%an <%ae>" "$stash_id")
-        echo "Stash: $stash_id $stash_message"
-        echo "  Commit: $stash_sha"
-        echo "  Author: $author"
-        echo "  Date: $(git show -s --format=%cd --date=local "$stash_id")"
-        echo "  Show command: git stash show -p $stash_id"
-        echo "  Delete command: git stash drop $stash_id"
+    # Check for stashes
+    display_header "STASHES"
+    stash_list=$(git stash list)
+    if [ -z "$stash_list" ]; then
+        echo "No stashes found."
         echo
-    done
+    else
+        echo "$stash_list" | while read -r stash_line; do
+            stash_id=$(echo "$stash_line" | cut -d: -f1)
+            stash_sha=$(git rev-parse "$stash_id")
+            stash_message=$(echo "$stash_line" | cut -d: -f2-)
+            author=$(git show -s --format="%an <%ae>" "$stash_id")
+            echo "Stash: $stash_id $stash_message"
+            echo "  Commit: $stash_sha"
+            echo "  Author: $author"
+            echo "  Date: $(git show -s --format=%cd --date=local "$stash_id")"
+            echo "  Show command: git stash show -p $stash_id"
+            echo "  Delete command: git stash drop $stash_id"
+            echo
+        done
+    fi
 fi
 
 # Check local tags that don't exist in remotes (if not disabled)
@@ -185,12 +199,6 @@ if [ "$NO_TAGS" = false ]; then
         echo "Comparing local tags against remotes..."
         tag_count=0
         total_tags=$(echo "$local_tags" | wc -l)
-
-        # Warning about no-fetch mode
-        if [ "$NO_FETCH" = true ]; then
-            echo "Note: Running in --no-fetch mode. Using locally cached remote information."
-            echo "Results may be incomplete if local cache is out of date."
-        fi
 
         # Use process substitution instead of a pipeline to preserve variable values
         # This keeps changes to found_unpushed_tags visible to the parent shell
@@ -243,31 +251,33 @@ else
     echo
 fi
 
-# Check for uncommitted changes
-display_header "UNCOMMITTED CHANGES"
-if git diff --quiet; then
-    if git diff --cached --quiet; then
-        echo "No uncommitted changes."
+# Check for uncommitted changes (skip if --tags)
+if [ "$ONLY_TAGS" = false ]; then
+    display_header "UNCOMMITTED CHANGES"
+    if git diff --quiet; then
+        if git diff --cached --quiet; then
+            echo "No uncommitted changes."
+        else
+            echo "Changes staged for commit:"
+            git diff --cached --stat
+        fi
     else
-        echo "Changes staged for commit:"
-        git diff --cached --stat
+        echo "Unstaged changes:"
+        git diff --stat
+        if ! git diff --cached --quiet; then
+            echo -e "\nStaged changes:"
+            git diff --cached --stat
+        fi
     fi
-else
-    echo "Unstaged changes:"
-    git diff --stat
-    if ! git diff --cached --quiet; then
-        echo -e "\nStaged changes:"
-        git diff --cached --stat
-    fi
-fi
 
-# Check for untracked files
-display_header "UNTRACKED FILES"
-untracked_files=$(git ls-files --others --exclude-standard)
-if [ -z "$untracked_files" ]; then
-    echo "No untracked files."
-else
-    echo "$untracked_files"
+    # Check for untracked files
+    display_header "UNTRACKED FILES"
+    untracked_files=$(git ls-files --others --exclude-standard)
+    if [ -z "$untracked_files" ]; then
+        echo "No untracked files."
+    else
+        echo "$untracked_files"
+    fi
 fi
 
 echo -e "\nDone."
