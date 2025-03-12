@@ -186,41 +186,6 @@ branch_in_remotes() {
     return 1
 }
 
-# Function to check if a tag exists in any remote
-tag_in_remotes() {
-    local tag=$1
-    local tag_found=1  # Default to not found (1 = false in bash)
-
-    # Escape tag name for grep (special characters like ., +, etc.)
-    local escaped_tag
-    escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
-
-    # IMPORTANT: Check EACH remote individually, and only return "found" if the tag exists in ANY remote
-    for remote in "${remotes[@]}"; do
-        # Get list of tags for this remote
-        local remote_tags
-        remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null)
-
-        if [ -z "$remote_tags" ]; then
-            continue  # Skip empty remote or error
-        fi
-
-        # Debug output to check what we're matching against
-        # echo "Checking for tag '$tag' in remote '$remote'"
-        # echo "$remote_tags" | grep "refs/tags/$escaped_tag"
-
-        # Check for exact tag match - either refs/tags/tagname or refs/tags/tagname^{}
-        if echo "$remote_tags" | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag$" ||
-           echo "$remote_tags" | grep -q "[[:xdigit:]]\+[[:space:]]refs/tags/$escaped_tag\\^{}$"; then
-            # Tag found in this remote
-            tag_found=0  # Set to found (0 = true in bash)
-            break
-        fi
-    done
-
-    return $tag_found
-}
-
 # Check local branches that don't exist in remotes
 if [ "$CHECK_BRANCHES" = true ]; then
     display_header "LOCAL BRANCHES NOT IN REMOTES"
@@ -287,13 +252,11 @@ if [ "$CHECK_TAGS" = true ]; then
         tag_count=0
         total_tags=$(echo "$local_tags" | wc -l)
 
-        # Use process substitution instead of a pipeline to preserve variable values
-        # This keeps changes to found_unpushed_tags visible to the parent shell
-        tag_displayed=false
-
         # Add debugging to see what's happening
         echo "Processing $total_tags local tags..."
 
+        # Use process substitution instead of a pipeline to preserve variable values
+        tag_displayed=false
         while read -r tag; do
             # Show progress every 10 tags, but only if we haven't displayed any tags yet
             tag_count=$((tag_count + 1))
@@ -302,13 +265,10 @@ if [ "$CHECK_TAGS" = true ]; then
                 echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
             fi
 
-            # Important: Check if tag exists in ANY remote (origin OR upstream)
-            local tag_exists_in_remote=false
+            # Check if tag exists in ANY remote (origin OR upstream)
+            tag_in_remote=false
 
             for remote in "${remotes[@]}"; do
-                # Debug message
-                # echo "Checking for tag '$tag' in remote '$remote'"
-
                 # Get tags from this remote
                 remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null)
 
@@ -316,102 +276,16 @@ if [ "$CHECK_TAGS" = true ]; then
                 escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
 
                 # Look for exact matches
-                if echo "$remote_tags" | grep -q
-
-        # Final progress update - only show if no tags were displayed
-        if [ "$tag_displayed" = false ]; then
-            echo "  Progress: $total_tags/$total_tags tags processed"
-        fi
-
-        if [ "$found_unpushed_tags" = false ]; then
-            echo "No local tags found that aren't in remotes."
-            echo
-        fi
-    fi
-fi
-
-# Check for uncommitted changes
-if [ "$CHECK_BRANCHES" = true ]; then
-    display_header "UNCOMMITTED CHANGES"
-    if git diff --quiet; then
-        if git diff --cached --quiet; then
-            echo "No uncommitted changes."
-        else
-            echo "Changes staged for commit:"
-            git diff --cached --stat
-        fi
-    else
-        echo "Unstaged changes:"
-        git diff --stat
-        if ! git diff --cached --quiet; then
-            echo -e "\nStaged changes:"
-            git diff --cached --stat
-        fi
-    fi
-
-    # Check for untracked files
-    display_header "UNTRACKED FILES"
-    untracked_files=$(git ls-files --others --exclude-standard)
-    if [ -z "$untracked_files" ]; then
-        echo "No untracked files."
-    else
-        echo "$untracked_files"
-    fi
-fi
-
-echo -e "\nDone."\t'"refs/tags/$escaped_tag$" ||
-                   echo "$remote_tags" | grep -q
-
-        # Final progress update - only show if no tags were displayed
-        if [ "$tag_displayed" = false ]; then
-            echo "  Progress: $total_tags/$total_tags tags processed"
-        fi
-
-        if [ "$found_unpushed_tags" = false ]; then
-            echo "No local tags found that aren't in remotes."
-            echo
-        fi
-    fi
-fi
-
-# Check for uncommitted changes
-if [ "$CHECK_BRANCHES" = true ]; then
-    display_header "UNCOMMITTED CHANGES"
-    if git diff --quiet; then
-        if git diff --cached --quiet; then
-            echo "No uncommitted changes."
-        else
-            echo "Changes staged for commit:"
-            git diff --cached --stat
-        fi
-    else
-        echo "Unstaged changes:"
-        git diff --stat
-        if ! git diff --cached --quiet; then
-            echo -e "\nStaged changes:"
-            git diff --cached --stat
-        fi
-    fi
-
-    # Check for untracked files
-    display_header "UNTRACKED FILES"
-    untracked_files=$(git ls-files --others --exclude-standard)
-    if [ -z "$untracked_files" ]; then
-        echo "No untracked files."
-    else
-        echo "$untracked_files"
-    fi
-fi
-
-echo -e "\nDone."\t'"refs/tags/$escaped_tag\\^{}$"; then
+                if echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag$" ||
+                   echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag\\^{}$"; then
                     # Tag found in this remote
-                    tag_exists_in_remote=true
+                    tag_in_remote=true
                     break
                 fi
             done
 
             # Only display tags that don't exist in ANY remote
-            if [ "$tag_exists_in_remote" = false ]; then
+            if [ "$tag_in_remote" = false ]; then
                 found_unpushed_tags=true
 
                 # Clear the progress line if we're about to display a tag
