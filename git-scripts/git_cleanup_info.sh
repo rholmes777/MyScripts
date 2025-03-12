@@ -13,6 +13,22 @@
 #   --no-tags     Skip checking tags (much faster for repos with many tags)
 #   --fast        Same as --no-tags (fastest mode)
 #   --help        Show this help message
+#   --debug       Enable detailed debug logging
+#   --limit=N     Process only N tags (for testing)
+#   --dump-tags   Dump all remote tag information
+
+# Debug log file
+DEBUG_LOG="/tmp/git_cleanup_debug.log"
+DEBUG_MODE=false
+TAG_LIMIT=0
+DUMP_TAGS=false
+
+# Function to log debug messages
+debug_log() {
+    if [ "$DEBUG_MODE" = true ]; then
+        echo "[DEBUG] $(date +%H:%M:%S) - $*" >> "$DEBUG_LOG"
+    fi
+}
 
 # Function to check if a command exists
 command_exists() {
@@ -42,6 +58,9 @@ show_help() {
     echo "  --no-tags     Skip checking tags (much faster for repos with many tags)"
     echo "  --fast        Same as --no-tags (fastest mode)"
     echo "  --help        Show this help message"
+    echo "  --debug       Enable detailed debug logging"
+    echo "  --limit=N     Process only N tags (for testing)"
+    echo "  --dump-tags   Dump all remote tag information"
     echo
     echo "With no options, performs all checks."
     exit 0
@@ -101,6 +120,23 @@ else
             --stashes)
                 CHECK_STASHES=true
                 ;;
+            --debug)
+                DEBUG_MODE=true
+                # Clear the log file
+                > "$DEBUG_LOG"
+                echo "Debug mode enabled, logging to $DEBUG_LOG"
+                ;;
+            --dump-tags)
+                DUMP_TAGS=true
+                ;;
+            --limit=*)
+                TAG_LIMIT="${arg#*=}"
+                if ! [[ "$TAG_LIMIT" =~ ^[0-9]+$ ]]; then
+                    echo "Error: --limit must be a number"
+                    exit 1
+                fi
+                echo "Limiting to $TAG_LIMIT tags"
+                ;;
             *)
                 INVALID_ARG=true
                 ;;
@@ -158,6 +194,7 @@ if [ ${#remotes[@]} -eq 0 ]; then
 fi
 
 echo "Checking against remotes: ${remotes[*]}"
+debug_log "Remotes found: ${remotes[*]}"
 
 # Fetch all remotes to ensure we have the latest data
 echo "Fetching from remotes (this might take a while for repos with many branches/tags)..."
@@ -237,6 +274,16 @@ if [ "$CHECK_STASHES" = true ]; then
     fi
 fi
 
+# Dump all remote tag information if requested
+if [ "$DUMP_TAGS" = true ]; then
+    display_header "REMOTE TAGS"
+    for remote in "${remotes[@]}"; do
+        echo "Tags in remote '$remote':"
+        git ls-remote --tags "$remote"
+        echo
+    done
+fi
+
 # Check local tags that don't exist in remotes
 if [ "$CHECK_TAGS" = true ]; then
     display_header "LOCAL TAGS NOT IN REMOTES"
@@ -252,8 +299,26 @@ if [ "$CHECK_TAGS" = true ]; then
         tag_count=0
         total_tags=$(echo "$local_tags" | wc -l)
 
+        # If we're limiting the number of tags to process
+        if [ "$TAG_LIMIT" -gt 0 ] && [ "$TAG_LIMIT" -lt "$total_tags" ]; then
+            echo "Note: Processing only $TAG_LIMIT of $total_tags tags (--limit option)"
+            # Get only the first N tags
+            local_tags=$(echo "$local_tags" | head -n "$TAG_LIMIT")
+            total_tags=$TAG_LIMIT
+        fi
+
         # Add debugging to see what's happening
         echo "Processing $total_tags local tags..."
+        debug_log "Processing $total_tags local tags"
+
+        # Cache remote tag data to avoid repeated calls to git ls-remote
+        # Create an associative array
+        declare -A remote_tags_cache
+        for remote in "${remotes[@]}"; do
+            debug_log "Fetching tags from remote: $remote"
+            remote_tags_cache[$remote]=$(git ls-remote --tags "$remote" 2>/dev/null)
+            debug_log "Cached tag data for $remote"
+        done
 
         # Use process substitution instead of a pipeline to preserve variable values
         tag_displayed=false
@@ -265,28 +330,48 @@ if [ "$CHECK_TAGS" = true ]; then
                 echo -ne "  Progress: $tag_count/$total_tags tags processed\r"
             fi
 
+            debug_log "Checking tag: $tag (${tag_count}/${total_tags})"
+
             # Check if tag exists in ANY remote (origin OR upstream)
             tag_in_remote=false
 
+            # Escape tag name for grep
+            escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
+            debug_log "Escaped tag name: $escaped_tag"
+
             for remote in "${remotes[@]}"; do
-                # Get tags from this remote
-                remote_tags=$(git ls-remote --tags "$remote" 2>/dev/null)
+                # Get tags from cache instead of calling git ls-remote again
+                remote_tags="${remote_tags_cache[$remote]}"
 
-                # Escape tag name for grep
-                escaped_tag=$(echo "$tag" | sed 's/[.^$*+?()[\]{|}]/\\&/g')
+                # Debug the pattern we're looking for
+                debug_log "Looking for tag $tag in remote $remote"
 
-                # Look for exact matches
-                if echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag$" ||
-                   echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag\\^{}$"; then
-                    # Tag found in this remote
+                # Look for the tag with a literal tab character
+                if echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag$"; then
+                    debug_log "Tag $tag found in $remote (normal tag)"
                     tag_in_remote=true
                     break
                 fi
+
+                # Also check for annotated tags with ^{} suffix
+                if echo "$remote_tags" | grep -q $'\t'"refs/tags/$escaped_tag\\^{}$"; then
+                    debug_log "Tag $tag found in $remote (annotated tag)"
+                    tag_in_remote=true
+                    break
+                fi
+
+                # If we haven't found it, log that information
+                if [ "$tag_in_remote" = false ]; then
+                    debug_log "Tag $tag not found in $remote"
+                fi
             done
+
+            debug_log "Tag $tag exists in remotes: $tag_in_remote"
 
             # Only display tags that don't exist in ANY remote
             if [ "$tag_in_remote" = false ]; then
                 found_unpushed_tags=true
+                debug_log "Tag $tag NOT found in any remote - will display"
 
                 # Clear the progress line if we're about to display a tag
                 if [ "$tag_displayed" = false ]; then
@@ -349,4 +434,5 @@ if [ "$CHECK_BRANCHES" = true ]; then
     fi
 fi
 
+debug_log "Script completed successfully"
 echo -e "\nDone."
