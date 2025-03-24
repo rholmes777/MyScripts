@@ -54,4 +54,4 @@ for dir in */; do
     fi
 done
 
-echo "echo \"Git repository migration completed!\""
+echo "echo \"Finished generating git repository migration commands; Done!\""

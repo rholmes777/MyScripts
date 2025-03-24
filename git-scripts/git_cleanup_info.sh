@@ -58,7 +58,7 @@ show_help() {
     echo "  --no-tags     Skip checking tags (much faster for repos with many tags)"
     echo "  --fast        Same as --no-tags (fastest mode)"
     echo "  --help        Show this help message"
-    echo "  --debug       Enable detailed debug logging"
+    echo "  --debug       Enable detailed debug logging (logging to $DEBUG_LOG)"
     echo "  --limit=N     Process only N tags (for testing)"
     echo "  --dump-tags   Dump all remote tag information"
     echo
