@@ -1,17 +1,90 @@
-# JetBrains IDEs
-.idea/
+# PyCharm IDE specific files
+.idea/*
+# Some possible ideas for excluding the ignore attribute for certain projects
+# !.idea/misc.xml
+# !.idea/modules.xml
+# !.idea/vcs.xml
+# !.idea/projectCodeStyle.xml
+# !.idea/encodings.xml
+.idea_modules/
 *.iml
 *.iws
 *.ipr
-out/
-.idea_modules/
-/out/
 
-# JIRA plugin
-atlassian-ide-plugin.xml
+# Python virtual environments
+.venv/
+venv/
+ENV/
+.direnv/
 
-# Crashlytics plugin
-com_crashlytics_export_strings.xml
-crashlytics.properties
-crashlytics-build.properties
-fabric.properties
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+
+# Documentation
+/docs/_build/
+/docs/api/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.*
+.env.local
+.python-version
+
+# Database files
+*.db
+*.sqlite3
+*.sqlite
+
+# Local development settings
+*.local.py
+local_settings.py
+*.log
+
+# Poetry
+poetry.lock
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Backup files
+*.bak
+*.swp
+*.swo
+*~
+
+# Rope project settings
+.ropeproject
+
+# Visual Studio Code
+.vscode/
+
+# Operating System
+.DS_Store
+Thumbs.db
